@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>Prediction Result</title>
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+</head>
+
+<body>
+
+<div class="container mt-5">
+
+<div class="card shadow-lg p-5">
+
+<h1 class="text-center mb-4">
+
+🏥 Prediction Result
+
+</h1>
+
+<hr>
+
+<h3>
+
+🦠 Disease
+
+</h3>
+
+<h2 class="text-primary">
+
+{{ disease }}
+
+</h2>
+
+<hr>
+
+<h3>
+
+📈 Confidence
+
+</h3>
+
+<div class="progress">
+
+<div
+class="progress-bar bg-success"
+style="width:{{ confidence }}%;">
+
+{{ confidence }}%
+
+</div>
+
+</div>
+
+<hr>
+
+<h3>
+
+📖 Description
+
+</h3>
+
+<p>
+
+{{ description }}
+
+</p>
+
+<hr>
+
+<h3>
+
+🛡 Precautions
+
+</h3>
+
+<ul>
+
+{% for p in precautions %}
+
+<li>{{ p }}</li>
+
+{% endfor %}
+
+</ul>
+
+<hr>
+
+<h3>
+
+👨‍⚕ Suggested Specialist
+
+</h3>
+
+<h4>
+
+{{ doctor }}
+
+</h4>
+
+<hr>
+
+<div class="alert alert-warning">
+
+<strong>Disclaimer:</strong>
+
+This application provides an AI-generated prediction for educational purposes only.
+
+It is NOT a medical diagnosis.
+
+Please consult a qualified healthcare professional for medical advice.
+
+</div>
+
+<div class="text-center">
+
+<a href="/predict" class="btn btn-primary btn-lg">
+
+Predict Again
+
+</a>
+
+</div>
+
+</div>
+
+</div>
+
+</body>
+
+</html>

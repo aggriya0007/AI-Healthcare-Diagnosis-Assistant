@@ -1,0 +1,79 @@
+body{
+    background:#f5f7fb;
+    font-family:Arial, Helvetica, sans-serif;
+}
+
+.card{
+    border:none;
+    border-radius:15px;
+    transition:.3s;
+}
+
+.card:hover{
+    transform:translateY(-8px);
+}
+
+.btn{
+    border-radius:30px;
+    padding:12px 30px;
+}
+
+h1{
+    font-weight:bold;
+}
+
+.lead{
+    color:#555;
+}
+.form-check{
+
+    background:white;
+
+    padding:10px;
+
+    border-radius:10px;
+
+    transition:.3s;
+
+}
+
+.form-check:hover{
+
+    background:#eaf4ff;
+
+}
+
+#searchBox{
+
+    border-radius:30px;
+
+    padding:12px;
+
+}
+.progress{
+
+height:30px;
+
+border-radius:20px;
+
+}
+
+.progress-bar{
+
+font-size:16px;
+
+font-weight:bold;
+
+}
+
+.card{
+
+border-radius:20px;
+
+}
+
+.alert{
+
+border-radius:15px;
+
+}

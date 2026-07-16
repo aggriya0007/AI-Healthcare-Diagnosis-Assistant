@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Patient Registration</title>
+
+    <style>
+
+body{
+font-family:Arial;
+background:#f4f7fc;
+}
+
+.container{
+width:500px;
+margin:50px auto;
+background:white;
+padding:30px;
+border-radius:15px;
+box-shadow:0 0 20px rgba(0,0,0,.15);
+}
+
+input,select{
+width:100%;
+padding:12px;
+margin:10px 0;
+border-radius:8px;
+border:1px solid #ccc;
+}
+
+button{
+width:100%;
+padding:15px;
+background:#007bff;
+color:white;
+border:none;
+border-radius:8px;
+font-size:18px;
+cursor:pointer;
+}
+
+button:hover{
+background:#0056b3;
+}
+
+h2{
+text-align:center;
+}
+
+    </style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h2>🏥 Patient Registration</h2>
+
+<form method="POST" action="/register">
+
+<input
+type="text"
+name="name"
+placeholder="Full Name"
+required>
+
+<input
+type="number"
+name="age"
+placeholder="Age"
+required>
+
+<select name="gender">
+
+<option>Male</option>
+
+<option>Female</option>
+
+<option>Other</option>
+
+</select>
+
+<input
+type="text"
+name="phone"
+placeholder="Phone Number"
+required>
+
+<input
+type="email"
+name="email"
+placeholder="Email"
+required>
+
+<button type="submit">
+
+Continue →
+
+</button>
+
+</form>
+
+</div>
+
+</body>
+
+</html>
