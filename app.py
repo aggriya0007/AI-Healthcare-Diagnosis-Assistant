@@ -1,11 +1,14 @@
 from pydoc import doc
 
-from flask import Flask, render_template, request, redirect, session, send_file, abort
+from flask import Flask, render_template, request, redirect, session, send_file, abort, url_for, flash
 import pandas as pd
 import qrcode
 import joblib
 import sqlite3
 import os
+import smtplib
+from functools import wraps
+from email.message import EmailMessage
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -28,7 +31,7 @@ from reportlab.platypus import (
 )
 
 app = Flask(__name__)
-app.secret_key = "healthcare_ai_project"
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "healthcare_ai_project")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "database", "healthcare.db")
@@ -38,6 +41,26 @@ REPORT_PATH = os.path.join(BASE_DIR, "medical_report.pdf")
 
 # Your live Render URL (used to build the QR verification link)
 BASE_URL = "https://ai-healthcare-diagnosis-assistant.onrender.com"
+
+# ==========================
+# Admin Login Credentials
+# ==========================
+# Set these as environment variables in Render (and locally) instead of
+# hardcoding real credentials. Falls back to a default for local testing.
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+
+# ==========================
+# Email (SMTP) Configuration
+# ==========================
+# Uses Gmail SMTP by default. MAIL_USERNAME must be a full Gmail address,
+# and MAIL_PASSWORD must be a 16-character Gmail "App Password"
+# (not your normal Gmail password) - generate one at
+# https://myaccount.google.com/apppasswords
+MAIL_SERVER = os.environ.get("MAIL_SERVER", "smtp.gmail.com")
+MAIL_PORT = int(os.environ.get("MAIL_PORT", "465"))
+MAIL_USERNAME = os.environ.get("MAIL_USERNAME")
+MAIL_PASSWORD = os.environ.get("MAIL_PASSWORD")
 
 # ==========================
 # Load Machine Learning Model
@@ -135,12 +158,54 @@ def get_db_connection():
 
 
 # ==========================
+# Admin Login Decorator
+# ==========================
+def login_required(view_func):
+    """Protects admin-only pages (Dashboard, History, Patient Details)."""
+    @wraps(view_func)
+    def wrapped_view(*args, **kwargs):
+        if not session.get("is_admin"):
+            # Remember where they were headed so we can send them back after login
+            session["next_url"] = request.path
+            return redirect(url_for("login"))
+        return view_func(*args, **kwargs)
+    return wrapped_view
+
+
+# ==========================
 # Routes
 # ==========================
 
 @app.route("/")
 def home():
     return render_template("index.html")
+
+
+# ==========================
+# Admin Login / Logout
+# ==========================
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            session["is_admin"] = True
+            next_url = session.pop("next_url", None)
+            return redirect(next_url or url_for("dashboard"))
+        else:
+            error = "Invalid username or password."
+
+    return render_template("login.html", error=error)
+
+
+@app.route("/logout")
+def logout():
+    session.pop("is_admin", None)
+    return redirect(url_for("login"))
 
 
 # ==========================
@@ -238,9 +303,10 @@ def result():
 
 
 # ==========================
-# History Page  (this is now a proper top-level route)
+# History Page (admin only)
 # ==========================
 @app.route("/history")
+@login_required
 def history():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -315,9 +381,37 @@ def history():
 
 
 # ==========================
-# Dashboard
+# Patient Details Page (admin only)
+# ==========================
+@app.route("/patient/<int:patient_id>")
+@login_required
+def patient_detail(patient_id):
+    conn = get_db_connection()
+    patient = conn.execute(
+        "SELECT * FROM patients WHERE id = ?", (patient_id,)
+    ).fetchone()
+    conn.close()
+
+    if patient is None:
+        abort(404)
+
+    doctor = doctor_dict.get(patient["disease"], "General Physician")
+    qr_data = f"{BASE_URL}/verify/{patient['report_id']}"
+
+    return render_template(
+        "patient_detail.html",
+        patient=patient,
+        doctor=doctor,
+        qr_data=qr_data,
+        mail_configured=bool(MAIL_USERNAME and MAIL_PASSWORD),
+    )
+
+
+# ==========================
+# Dashboard (admin only)
 # ==========================
 @app.route("/dashboard")
+@login_required
 def dashboard():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -372,7 +466,7 @@ def dashboard():
 
 
 # ==========================
-# Download Professional PDF Report
+# PDF Report Builder (shared by download + email)
 # ==========================
 from reportlab.pdfgen import canvas
 def add_page_number(canvas, doc):
@@ -381,33 +475,16 @@ def add_page_number(canvas, doc):
     canvas.drawRightString(550, 20, f"Page {page_num}")
 
 
-@app.route("/download_report")
-def download_report():
+def build_report_pdf(latest_patient):
+    """
+    Builds the medical report PDF on disk (REPORT_PATH) for the given
+    patient row, and returns the report_id used. Shared by both the
+    /download_report route and the /email_report route so the PDF layout
+    only needs to be maintained in one place.
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Prefer the patient from the current session (the one who just got a
-    # prediction); fall back to the most recent record in the database.
-    report_id = session.get("report_id")
-    latest_patient = None
-
-    if report_id:
-        cursor.execute(
-            "SELECT * FROM patients WHERE report_id = ? ORDER BY id DESC LIMIT 1",
-            (report_id,),
-        )
-        latest_patient = cursor.fetchone()
-
-    if latest_patient is None:
-        cursor.execute("SELECT * FROM patients ORDER BY id DESC LIMIT 1")
-        latest_patient = cursor.fetchone()
-
-    if latest_patient is None:
-        conn.close()
-        return "No patient records found yet. Please complete a prediction first.", 404
-
-    # Use the report_id already stored on the patient record, so the
-    # verification QR code and the file name both point to the SAME id.
     report_id = latest_patient["report_id"] or (
         "AIH-" + now_ist().strftime("%Y%m%d%H%M%S")
     )
@@ -430,21 +507,6 @@ def download_report():
         FROM patients ORDER BY id DESC
     """)
     records = cursor.fetchall()
-
-    # ==========================
-    # Statistics
-    # ==========================
-    cursor.execute("SELECT COUNT(*) FROM patients")
-    total_patients = cursor.fetchone()[0]
-
-    cursor.execute("SELECT COUNT(*) FROM patients WHERE gender='Male'")
-    male_patients = cursor.fetchone()[0]
-
-    cursor.execute("SELECT COUNT(*) FROM patients WHERE gender='Female'")
-    female_patients = cursor.fetchone()[0]
-
-    cursor.execute("SELECT COUNT(DISTINCT disease) FROM patients")
-    total_diseases = cursor.fetchone()[0]
 
     conn.close()
 
@@ -718,16 +780,109 @@ def download_report():
         )
     )
 
-    # -------------------------
-    # Build PDF
-    # -------------------------
     doc.build(elements)
+
+    return report_id
+
+
+# ==========================
+# Download Professional PDF Report
+# ==========================
+@app.route("/download_report")
+def download_report():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Prefer the patient from the current session (the one who just got a
+    # prediction); fall back to the most recent record in the database.
+    report_id = session.get("report_id")
+    latest_patient = None
+
+    if report_id:
+        cursor.execute(
+            "SELECT * FROM patients WHERE report_id = ? ORDER BY id DESC LIMIT 1",
+            (report_id,),
+        )
+        latest_patient = cursor.fetchone()
+
+    if latest_patient is None:
+        cursor.execute("SELECT * FROM patients ORDER BY id DESC LIMIT 1")
+        latest_patient = cursor.fetchone()
+
+    conn.close()
+
+    if latest_patient is None:
+        return "No patient records found yet. Please complete a prediction first.", 404
+
+    report_id = build_report_pdf(latest_patient)
 
     return send_file(
         REPORT_PATH,
         as_attachment=True,
         download_name=f"{report_id}.pdf"
     )
+
+
+# ==========================
+# Email PDF Report to Patient (admin only)
+# ==========================
+@app.route("/email_report/<int:patient_id>", methods=["POST"])
+@login_required
+def email_report(patient_id):
+    conn = get_db_connection()
+    patient = conn.execute(
+        "SELECT * FROM patients WHERE id = ?", (patient_id,)
+    ).fetchone()
+    conn.close()
+
+    if patient is None:
+        abort(404)
+
+    if not patient["email"]:
+        return "This patient has no email address on file.", 400
+
+    if not MAIL_USERNAME or not MAIL_PASSWORD:
+        return (
+            "Email sending isn't configured yet. Set the MAIL_USERNAME and "
+            "MAIL_PASSWORD environment variables (a Gmail address and an "
+            "App Password) on the server, then try again.",
+            500,
+        )
+
+    report_id = build_report_pdf(patient)
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Your Medical Report - {report_id}"
+    msg["From"] = MAIL_USERNAME
+    msg["To"] = patient["email"]
+    msg.set_content(
+        f"Dear {patient['name']},\n\n"
+        f"Please find attached your medical report from the "
+        f"AI Healthcare Diagnosis Assistant.\n\n"
+        f"Report ID: {report_id}\n"
+        f"Predicted Condition: {patient['disease']}\n\n"
+        f"This report was generated by an AI-based prediction system and "
+        f"is for preliminary assessment only. Please consult a qualified "
+        f"doctor for an official diagnosis.\n\n"
+        f"Regards,\nAI Healthcare Diagnosis Assistant"
+    )
+
+    with open(REPORT_PATH, "rb") as f:
+        msg.add_attachment(
+            f.read(),
+            maintype="application",
+            subtype="pdf",
+            filename=f"{report_id}.pdf",
+        )
+
+    try:
+        with smtplib.SMTP_SSL(MAIL_SERVER, MAIL_PORT) as smtp:
+            smtp.login(MAIL_USERNAME, MAIL_PASSWORD)
+            smtp.send_message(msg)
+    except Exception as e:
+        return f"Failed to send email: {e}", 500
+
+    return redirect(url_for("patient_detail", patient_id=patient_id, emailed=1))
 
 
 # ==========================
