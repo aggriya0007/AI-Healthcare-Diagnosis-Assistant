@@ -20,6 +20,76 @@
     📄 Download PDF Report
     </a>
 
+    <form method="GET" action="/history" class="card shadow p-3 mb-4">
+
+    <div class="row">
+
+        <div class="col-md-4 mb-3">
+            <label class="form-label"><b>🔍 Patient Name</b></label>
+            <select name="disease" class="form-select">
+
+            <option value="">All Diseases</option>
+
+            {% for d in diseases %}
+
+            <option value="{{ d }}"
+            {% if disease == d %}selected{% endif %}>
+            {{ d }}
+            </option>
+
+            {% endfor %}
+
+        </select>
+        </div>
+
+        <div class="col-md-3 mb-3">
+            <label class="form-label"><b>🦠 Disease</b></label>
+            <input
+                type="text"
+                name="disease"
+                class="form-control"
+                placeholder="Disease"
+                value="{{ disease }}"
+            >
+        </div>
+
+        <div class="col-md-2 mb-3">
+            <label class="form-label"><b>👤 Gender</b></label>
+
+            <select name="gender" class="form-select">
+
+                <option value="">All</option>
+
+                <option value="Male"
+                    {% if gender=="Male" %}selected{% endif %}>
+                    Male
+                </option>
+
+                <option value="Female"
+                    {% if gender=="Female" %}selected{% endif %}>
+                    Female
+                </option>
+
+            </select>
+
+        </div>
+
+        <div class="col-md-3 d-flex align-items-end">
+
+            <button class="btn btn-primary me-2 w-50">
+                🔍 Search
+            </button>
+
+            <a href="/history" class="btn btn-secondary w-50">
+                Reset
+            </a>
+
+        </div>
+
+    </div>
+
+</form>
+
     <table class="table table-bordered table-hover table-striped shadow">
 
         <thead class="table-primary">

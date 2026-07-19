@@ -227,13 +227,84 @@ def result():
     )
 
 
-@app.route("/history")
-def history():
-    conn = get_db_connection()
-    records = conn.execute("SELECT * FROM patients ORDER BY id DESC").fetchall()
-    conn.close()
-    return render_template("history.html", records=records)
+    @app.route("/history")
+    def history():
 
+        conn = sqlite3.connect("database/healthcare.db")
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        name = request.args.get("name", "")
+        disease = request.args.get("disease", "")
+        gender = request.args.get("gender", "")
+
+        query = """
+            SELECT *
+            FROM patients
+            WHERE 1=1
+        """
+
+        params = []
+
+        if name:
+            query += " AND name LIKE ?"
+            params.append(f"%{name}%")
+
+        if disease:
+            query += " AND disease = ?"
+            params.append(disease)
+
+        if gender:
+            query += " AND gender = ?"
+            params.append(gender)
+
+        query += " ORDER BY id DESC"
+
+        cursor.execute(query, params)
+        records = cursor.fetchall()
+
+    # ==========================
+    # Disease Dropdown
+    # ==========================
+
+    cursor.execute("""
+        SELECT DISTINCT disease
+        FROM patients
+        ORDER BY disease
+    """)
+
+    diseases = [row["disease"] for row in cursor.fetchall()]
+
+    # ==========================
+    # Statistics
+    # ==========================
+
+    cursor.execute("SELECT COUNT(*) FROM patients")
+    total_patients = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM patients WHERE gender='Male'")
+    male_patients = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM patients WHERE gender='Female'")
+    female_patients = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(DISTINCT disease) FROM patients")
+    total_diseases = cursor.fetchone()[0]
+
+    conn.close()
+
+    return render_template(
+        "history.html",
+        records=records,
+        name=name,
+        disease=disease,
+        gender=gender,
+        diseases=diseases,
+        total_patients=total_patients,
+        male_patients=male_patients,
+        female_patients=female_patients,
+        total_diseases=total_diseases
+    )
 
 # ==========================
 # Dashboard
@@ -347,6 +418,22 @@ def download_report():
         FROM patients ORDER BY id DESC
     """)
     records = cursor.fetchall()
+
+    # ==========================
+    # Statistics
+    # ==========================
+
+    cursor.execute("SELECT COUNT(*) FROM patients")
+    total_patients = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM patients WHERE gender='Male'")
+    male_patients = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM patients WHERE gender='Female'")
+    female_patients = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(DISTINCT disease) FROM patients")
+    total_diseases = cursor.fetchone()[0]
 
     conn.close()
 
