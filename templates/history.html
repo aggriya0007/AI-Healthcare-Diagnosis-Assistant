@@ -16,7 +16,7 @@
         🏥 Patient Diagnosis History
     </h1>
 
-    <a href="/download_pdf" class="btn btn-danger mb-3">
+    <a href="/download_report" class="btn btn-danger mb-3">
     📄 Download PDF Report
     </a>
 
@@ -26,31 +26,29 @@
 
         <div class="col-md-4 mb-3">
             <label class="form-label"><b>🔍 Patient Name</b></label>
-            <select name="disease" class="form-select">
-
-            <option value="">All Diseases</option>
-
-            {% for d in diseases %}
-
-            <option value="{{ d }}"
-            {% if disease == d %}selected{% endif %}>
-            {{ d }}
-            </option>
-
-            {% endfor %}
-
-        </select>
+            <input
+                type="text"
+                name="name"
+                class="form-control"
+                placeholder="Search by name"
+                value="{{ name }}"
+            >
         </div>
 
         <div class="col-md-3 mb-3">
             <label class="form-label"><b>🦠 Disease</b></label>
-            <input
-                type="text"
-                name="disease"
-                class="form-control"
-                placeholder="Disease"
-                value="{{ disease }}"
-            >
+            <select name="disease" class="form-select">
+
+                <option value="">All Diseases</option>
+
+                {% for d in diseases %}
+                <option value="{{ d }}"
+                    {% if disease == d %}selected{% endif %}>
+                    {{ d }}
+                </option>
+                {% endfor %}
+
+            </select>
         </div>
 
         <div class="col-md-2 mb-3">

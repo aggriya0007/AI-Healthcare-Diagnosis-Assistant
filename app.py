@@ -227,58 +227,55 @@ def result():
     )
 
 
-    @app.route("/history")
-    def history():
+# ==========================
+# History Page  (this is now a proper top-level route)
+# ==========================
+@app.route("/history")
+def history():
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-        conn = sqlite3.connect("database/healthcare.db")
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+    name = request.args.get("name", "")
+    disease = request.args.get("disease", "")
+    gender = request.args.get("gender", "")
 
-        name = request.args.get("name", "")
-        disease = request.args.get("disease", "")
-        gender = request.args.get("gender", "")
+    query = """
+        SELECT *
+        FROM patients
+        WHERE 1=1
+    """
+    params = []
 
-        query = """
-            SELECT *
-            FROM patients
-            WHERE 1=1
-        """
+    if name:
+        query += " AND name LIKE ?"
+        params.append(f"%{name}%")
 
-        params = []
+    if disease:
+        query += " AND disease = ?"
+        params.append(disease)
 
-        if name:
-            query += " AND name LIKE ?"
-            params.append(f"%{name}%")
+    if gender:
+        query += " AND gender = ?"
+        params.append(gender)
 
-        if disease:
-            query += " AND disease = ?"
-            params.append(disease)
+    query += " ORDER BY id DESC"
 
-        if gender:
-            query += " AND gender = ?"
-            params.append(gender)
-
-        query += " ORDER BY id DESC"
-
-        cursor.execute(query, params)
-        records = cursor.fetchall()
+    cursor.execute(query, params)
+    records = cursor.fetchall()
 
     # ==========================
     # Disease Dropdown
     # ==========================
-
     cursor.execute("""
         SELECT DISTINCT disease
         FROM patients
         ORDER BY disease
     """)
-
     diseases = [row["disease"] for row in cursor.fetchall()]
 
     # ==========================
     # Statistics
     # ==========================
-
     cursor.execute("SELECT COUNT(*) FROM patients")
     total_patients = cursor.fetchone()[0]
 
@@ -305,6 +302,7 @@ def result():
         female_patients=female_patients,
         total_diseases=total_diseases
     )
+
 
 # ==========================
 # Dashboard
@@ -371,6 +369,8 @@ def add_page_number(canvas, doc):
     page_num = canvas.getPageNumber()
     canvas.setFont("Helvetica", 9)
     canvas.drawRightString(550, 20, f"Page {page_num}")
+
+
 @app.route("/download_report")
 def download_report():
     conn = get_db_connection()
@@ -396,6 +396,8 @@ def download_report():
         conn.close()
         return "No patient records found yet. Please complete a prediction first.", 404
 
+    # Use the report_id already stored on the patient record, so the
+    # verification QR code and the file name both point to the SAME id.
     report_id = latest_patient["report_id"] or (
         "AIH-" + datetime.now().strftime("%Y%m%d%H%M%S")
     )
@@ -422,7 +424,6 @@ def download_report():
     # ==========================
     # Statistics
     # ==========================
-
     cursor.execute("SELECT COUNT(*) FROM patients")
     total_patients = cursor.fetchone()[0]
 
@@ -472,12 +473,10 @@ def download_report():
         elements.append(Spacer(1, 10))
 
     # Header
-    from datetime import datetime
-    report_id = "AIH-" + datetime.now().strftime("%Y%m%d-%H%M%S")
     elements.append(
-    Paragraph(
-        f"<b>Report ID:</b> {report_id}",
-        styles["Normal"]
+        Paragraph(
+            f"<b>Report ID:</b> {report_id}",
+            styles["Normal"]
         )
     )
     elements.append(Paragraph(
@@ -593,8 +592,8 @@ def download_report():
         ["Predicted Disease", disease],
         ["Confidence", f"{latest_patient['confidence']}%"],
         ["Recommended Doctor", doctor],
+        ["Risk Level", risk],
     ], colWidths=[180, 250])
-    ["Risk Level", risk],
 
     latest_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#dc3545")),
@@ -630,7 +629,6 @@ def download_report():
     # ==========================
     # QR Code Verification
     # ==========================
-
     elements.append(
         Paragraph(
             "<font size='15' color='#0d6efd'><b>Report Verification</b></font>",
@@ -662,7 +660,6 @@ def download_report():
     # ==========================
     # Confidential Notice
     # ==========================
-
     elements.append(
         Paragraph(
             "<font color='#dc3545'><b>CONFIDENTIAL MEDICAL REPORT</b></font>",
@@ -682,7 +679,6 @@ def download_report():
     # ==========================
     # Disclaimer
     # ==========================
-
     elements.append(
         Paragraph(
             "<b>Disclaimer:</b> This report has been generated using an Artificial Intelligence based disease prediction system. The prediction is intended for educational and preliminary assessment purposes only and should not be considered a substitute for diagnosis or treatment by a qualified medical professional.",
@@ -691,37 +687,38 @@ def download_report():
     )
 
     elements.append(Spacer(1, 20))
-    
+
     # Footer
-    elements.append(Spacer(1,25))
+    elements.append(Spacer(1, 25))
 
     elements.append(
         Paragraph(
-        """
-        <b>AI Healthcare Diagnosis Assistant</b><br/>
-        Machine Learning Based Disease Prediction System<br/><br/>
+            """
+            <b>AI Healthcare Diagnosis Assistant</b><br/>
+            Machine Learning Based Disease Prediction System<br/><br/>
 
-        Developed by Aggriya Anand<br/><br/>
+            Developed by Aggriya Anand<br/><br/>
 
-        <font color='grey'>
-        This report is automatically generated using Artificial Intelligence.
-        It should not replace professional medical advice.
-        </font>
-        """,
-        styles["Italic"]
+            <font color='grey'>
+            This report is automatically generated using Artificial Intelligence.
+            It should not replace professional medical advice.
+            </font>
+            """,
+            styles["Italic"]
         )
     )
+
     # -------------------------
     # Build PDF
     # -------------------------
-
     doc.build(elements)
 
     return send_file(
         REPORT_PATH,
         as_attachment=True,
         download_name=f"{report_id}.pdf"
-)
+    )
+
 
 # ==========================
 # QR Verification Route
@@ -761,5 +758,7 @@ def verify(report_id):
 # ==========================
 # Run Application
 # ==========================
+print(app.url_map)
+
 if __name__ == "__main__":
     app.run(debug=True)
