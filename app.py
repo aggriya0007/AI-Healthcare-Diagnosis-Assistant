@@ -31,6 +31,28 @@ from reportlab.platypus import (
 )
 
 app = Flask(__name__)
+
+
+# ==========================
+# TEMPORARY DEBUG ERROR HANDLER
+# ==========================
+# Render runs this app through gunicorn in production, so Flask's normal
+# debug=True traceback page never shows there - you just get a blank
+# "Internal Server Error". This handler prints the full traceback to
+# Render's Logs tab AND shows it in the browser response, so we can see
+# exactly what's failing. REMOVE THIS once the bug is fixed, since showing
+# tracebacks to visitors is a security risk in a real production app.
+import traceback as _traceback
+
+
+@app.errorhandler(Exception)
+def handle_all_errors(e):
+    _traceback.print_exc()
+    return (
+        "<h2>Debug: An error occurred</h2>"
+        f"<pre style='white-space: pre-wrap; font-size: 13px;'>{_traceback.format_exc()}</pre>",
+        500,
+    )
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "healthcare_ai_project")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
