@@ -1,5 +1,4 @@
 from pydoc import doc
-
 from flask import Flask, render_template, request, redirect, session, send_file, abort, url_for, flash
 import pandas as pd
 import qrcode
@@ -21,6 +20,7 @@ def now_ist():
     """Current date/time, correctly localized to IST."""
     return datetime.now(IST)
 
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 from reportlab.lib import colors
@@ -36,12 +36,6 @@ app = Flask(__name__)
 # ==========================
 # TEMPORARY DEBUG ERROR HANDLER
 # ==========================
-# Render runs this app through gunicorn in production, so Flask's normal
-# debug=True traceback page never shows there - you just get a blank
-# "Internal Server Error". This handler prints the full traceback to
-# Render's Logs tab AND shows it in the browser response, so we can see
-# exactly what's failing. REMOVE THIS once the bug is fixed, since showing
-# tracebacks to visitors is a security risk in a real production app.
 import traceback as _traceback
 
 
@@ -53,6 +47,8 @@ def handle_all_errors(e):
         f"<pre style='white-space: pre-wrap; font-size: 13px;'>{_traceback.format_exc()}</pre>",
         500,
     )
+
+
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "healthcare_ai_project")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -60,6 +56,7 @@ DB_PATH = os.path.join(BASE_DIR, "database", "healthcare.db")
 LOGO_PATH = os.path.join(BASE_DIR, "static", "images", "logo.png")
 QR_PATH = os.path.join(BASE_DIR, "static", "images", "qr.png")
 REPORT_PATH = os.path.join(BASE_DIR, "medical_report.pdf")
+ADMIN_REPORT_PATH = os.path.join(BASE_DIR, "admin_master_report.pdf")
 
 # Your live Render URL (used to build the QR verification link)
 BASE_URL = "https://ai-healthcare-diagnosis-assistant.onrender.com"
@@ -67,18 +64,12 @@ BASE_URL = "https://ai-healthcare-diagnosis-assistant.onrender.com"
 # ==========================
 # Admin Login Credentials
 # ==========================
-# Set these as environment variables in Render (and locally) instead of
-# hardcoding real credentials. Falls back to a default for local testing.
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
 
 # ==========================
 # Email (SMTP) Configuration
 # ==========================
-# Uses Gmail SMTP by default. MAIL_USERNAME must be a full Gmail address,
-# and MAIL_PASSWORD must be a 16-character Gmail "App Password"
-# (not your normal Gmail password) - generate one at
-# https://myaccount.google.com/apppasswords
 MAIL_SERVER = os.environ.get("MAIL_SERVER", "smtp.gmail.com")
 MAIL_PORT = int(os.environ.get("MAIL_PORT", "465"))
 MAIL_USERNAME = os.environ.get("MAIL_USERNAME")
@@ -135,7 +126,7 @@ doctor_dict = {
 
 
 # ==========================
-# Database Setup (self-healing: safe to run every startup)
+# Database Setup (self-healing)
 # ==========================
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -160,7 +151,6 @@ def init_db():
         )
     """)
 
-    # Safe migration: add report_id column if it doesn't already exist
     cursor.execute("PRAGMA table_info(patients)")
     existing_cols = [row[1] for row in cursor.fetchall()]
     if "report_id" not in existing_cols:
@@ -183,11 +173,10 @@ def get_db_connection():
 # Admin Login Decorator
 # ==========================
 def login_required(view_func):
-    """Protects admin-only pages (Dashboard, History, Patient Details)."""
+    """Protects admin-only pages (Dashboard, History, Patient Details, Batch Download)."""
     @wraps(view_func)
     def wrapped_view(*args, **kwargs):
         if not session.get("is_admin"):
-            # Remember where they were headed so we can send them back after login
             session["next_url"] = request.path
             return redirect(url_for("login"))
         return view_func(*args, **kwargs)
@@ -337,11 +326,7 @@ def history():
     disease = request.args.get("disease", "")
     gender = request.args.get("gender", "")
 
-    query = """
-        SELECT *
-        FROM patients
-        WHERE 1=1
-    """
+    query = "SELECT * FROM patients WHERE 1=1"
     params = []
 
     if name:
@@ -361,19 +346,9 @@ def history():
     cursor.execute(query, params)
     records = cursor.fetchall()
 
-    # ==========================
-    # Disease Dropdown
-    # ==========================
-    cursor.execute("""
-        SELECT DISTINCT disease
-        FROM patients
-        ORDER BY disease
-    """)
+    cursor.execute("SELECT DISTINCT disease FROM patients ORDER BY disease")
     diseases = [row["disease"] for row in cursor.fetchall()]
 
-    # ==========================
-    # Statistics
-    # ==========================
     cursor.execute("SELECT COUNT(*) FROM patients")
     total_patients = cursor.fetchone()[0]
 
@@ -438,7 +413,6 @@ def dashboard():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # KPI Cards
     cursor.execute("SELECT COUNT(*) FROM patients")
     total_patients = cursor.fetchone()[0]
 
@@ -453,19 +427,16 @@ def dashboard():
     row = cursor.fetchone()
     common_disease = row[0] if row else "No Data"
 
-    # Doughnut Chart — Disease Distribution
     cursor.execute("SELECT disease, COUNT(*) FROM patients GROUP BY disease")
     rows = cursor.fetchall()
     labels = [r[0] for r in rows]
     values = [r[1] for r in rows]
 
-    # Bar Chart — Average Confidence by Disease
     cursor.execute("SELECT disease, AVG(confidence) FROM patients GROUP BY disease")
     confidence_rows = cursor.fetchall()
     confidence_labels = [r[0] for r in confidence_rows]
     confidence_values = [round(r[1], 2) for r in confidence_rows]
 
-    # Line Chart — Daily Patients
     cursor.execute("SELECT date, COUNT(*) FROM patients GROUP BY date ORDER BY date")
     line_rows = cursor.fetchall()
     date_labels = [r[0] for r in line_rows]
@@ -488,61 +459,21 @@ def dashboard():
 
 
 # ==========================
-# PDF Report Builder (shared by download + email)
+# Individual Patient PDF Builder
 # ==========================
-from reportlab.pdfgen import canvas
-def add_page_number(canvas, doc):
-    page_num = canvas.getPageNumber()
-    canvas.setFont("Helvetica", 9)
-    canvas.drawRightString(550, 20, f"Page {page_num}")
-
-
-def build_report_pdf(latest_patient):
+def build_individual_report_pdf(patient):
     """
-    Builds the medical report PDF on disk (REPORT_PATH) for the given
-    patient row, and returns the report_id used. Shared by both the
-    /download_report route and the /email_report route so the PDF layout
-    only needs to be maintained in one place.
+    Builds a strictly private medical report PDF containing ONLY 
+    the specific patient's information and diagnosis.
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    report_id = patient["report_id"] or ("AIH-" + now_ist().strftime("%Y%m%d%H%M%S"))
 
-    report_id = latest_patient["report_id"] or (
-        "AIH-" + now_ist().strftime("%Y%m%d%H%M%S")
-    )
-
-    cursor.execute("SELECT COUNT(*) FROM patients")
-    total_patients = cursor.fetchone()[0]
-
-    cursor.execute("SELECT ROUND(AVG(confidence), 2) FROM patients")
-    avg_conf = cursor.fetchone()[0] or 0
-
-    cursor.execute("""
-        SELECT disease, COUNT(*) FROM patients
-        GROUP BY disease ORDER BY COUNT(*) DESC LIMIT 1
-    """)
-    row = cursor.fetchone()
-    common_disease = row[0] if row else "N/A"
-
-    cursor.execute("""
-        SELECT name, age, gender, disease, confidence, date, time
-        FROM patients ORDER BY id DESC
-    """)
-    records = cursor.fetchall()
-
-    conn.close()
-
-    # -------------------------
-    # Generate QR code first (must exist on disk before we build the PDF)
-    # -------------------------
+    # Generate QR code for verification
     os.makedirs(os.path.dirname(QR_PATH), exist_ok=True)
     qr_data = f"{BASE_URL}/verify/{report_id}"
     qr_img = qrcode.make(qr_data)
     qr_img.save(QR_PATH)
 
-    # -------------------------
-    # Build PDF
-    # -------------------------
     doc = SimpleDocTemplate(
         REPORT_PATH,
         pagesize=A4,
@@ -561,292 +492,268 @@ def build_report_pdf(latest_patient):
 
     # Logo
     if os.path.exists(LOGO_PATH):
-        logo = Image(LOGO_PATH, width=2.2 * inch, height=2.2 * inch)
+        logo = Image(LOGO_PATH, width=1.8 * inch, height=1.8 * inch)
         logo.hAlign = "CENTER"
         elements.append(logo)
         elements.append(Spacer(1, 10))
 
     # Header
-    elements.append(
-        Paragraph(
-            f"<b>Report ID:</b> {report_id}",
-            styles["Normal"]
-        )
-    )
     elements.append(Paragraph(
-        "<font color='#0d6efd'><b><font size='24'>AI Healthcare Diagnosis Assistant</font></b></font>",
+        "<font color='#0d6efd'><b><font size='22'>AI Healthcare Diagnosis Assistant</font></b></font>",
         title,
     ))
     elements.append(Paragraph(
-        "<font size='15'><b>Machine Learning Based Disease Prediction System</b></font>",
+        "<font size='13'><b>Individual Patient Medical Report</b></font>",
         heading,
     ))
-    elements.append(Paragraph(
-        "<font color='grey'><i>Professional Patient Medical Report</i></font>",
-        heading,
-    ))
-    elements.append(Spacer(1, 10))
+    elements.append(Spacer(1, 15))
 
-    header_table = Table([
+    # Patient Details Table
+    elements.append(Paragraph("<b><font size='14' color='#0d6efd'>1. Patient Profile</font></b>", styles["Heading2"]))
+    elements.append(Spacer(1, 6))
+
+    patient_table = Table([
         ["Report ID", report_id],
-        ["Generated On", now_ist().strftime("%d-%m-%Y")],
-        ["Generated Time", now_ist().strftime("%I:%M %p")],
-    ], colWidths=[150, 250])
+        ["Patient Name", patient["name"]],
+        ["Age / Gender", f"{patient['age']} / {patient['gender']}"],
+        ["Phone Number", patient["phone"]],
+        ["Email Address", patient["email"]],
+        ["Report Date & Time", f"{patient['date']} at {patient['time']}"],
+    ], colWidths=[150, 300])
 
-    header_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0d6efd")),
-        ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
-        ("BACKGROUND", (1, 0), (1, -1), colors.whitesmoke),
-        ("GRID", (0, 0), (-1, -1), 0.8, colors.grey),
-        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-    ]))
-    elements.append(header_table)
-    elements.append(Spacer(1, 20))
-
-    # Report Summary
-    elements.append(Paragraph(
-        "<b><font size='16' color='#198754'>Report Summary</font></b>", heading
-    ))
-
-    summary_data = [
-        ["Total Patients", total_patients],
-        ["Average Confidence", f"{avg_conf}%"],
-        ["Most Common Disease", common_disease],
-    ]
-    summary_table = Table(summary_data, colWidths=[220, 220])
-    summary_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#0d6efd")),
-        ("BACKGROUND", (0, 1), (0, 1), colors.HexColor("#198754")),
-        ("BACKGROUND", (0, 2), (0, 2), colors.HexColor("#6f42c1")),
-        ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
-        ("BACKGROUND", (1, 0), (1, -1), colors.beige),
-        ("GRID", (0, 0), (-1, -1), 1, colors.grey),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-        ("TOPPADDING", (0, 0), (-1, -1), 10),
-    ]))
-    elements.append(summary_table)
-    elements.append(Spacer(1, 20))
-
-    # Patient Summary
-    elements.append(Paragraph(
-        "<b><font size='15' color='#0d6efd'>Patient Summary</font></b>", styles["Heading2"]
-    ))
-    elements.append(Spacer(1, 10))
-
-    patient_summary_table = Table([
-        ["Patient Name", latest_patient["name"]],
-        ["Age", latest_patient["age"]],
-        ["Gender", latest_patient["gender"]],
-        ["Phone", latest_patient["phone"]],
-        ["Email", latest_patient["email"]],
-        ["Report Date", now_ist().strftime("%d-%m-%Y")],
-        ["Generated By", "AI Healthcare Diagnosis Assistant"],
-    ], colWidths=[170, 280])
-
-    patient_summary_table.setStyle(TableStyle([
+    patient_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0d6efd")),
         ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
         ("BACKGROUND", (1, 0), (1, -1), colors.whitesmoke),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
     ]))
-    elements.append(patient_summary_table)
-    elements.append(Spacer(1, 20))
+    elements.append(patient_table)
+    elements.append(Spacer(1, 15))
 
-    # Latest Diagnosis
-    elements.append(Paragraph(
-        "<font size='16' color='#dc3545'><b>Latest Diagnosis</b></font>", heading
-    ))
-    elements.append(Spacer(1, 10))
+    # Diagnosis Details Table
+    elements.append(Paragraph("<b><font size='14' color='#dc3545'>2. Diagnosis Details</font></b>", styles["Heading2"]))
+    elements.append(Spacer(1, 6))
 
-    disease = latest_patient["disease"]
+    disease = patient["disease"]
     doctor = doctor_dict.get(disease, "General Physician")
-    confidence = latest_patient["confidence"]
+    confidence = patient["confidence"]
 
     if confidence >= 90:
         risk = "Very High Confidence"
-        risk_color = colors.green
     elif confidence >= 75:
         risk = "High Confidence"
-        risk_color = colors.orange
     else:
         risk = "Low Confidence"
-        risk_color = colors.red
 
-    latest_table = Table([
-        ["Patient Name", latest_patient["name"]],
-        ["Age", latest_patient["age"]],
-        ["Gender", latest_patient["gender"]],
+    symptoms_text = patient["symptoms"] if patient["symptoms"] else "None selected"
+
+    diagnosis_table = Table([
+        ["Reported Symptoms", symptoms_text],
         ["Predicted Disease", disease],
-        ["Confidence", f"{latest_patient['confidence']}%"],
-        ["Recommended Doctor", doctor],
-        ["Risk Level", risk],
-    ], colWidths=[180, 250])
+        ["Confidence Level", f"{confidence}% ({risk})"],
+        ["Recommended Specialist", doctor],
+    ], colWidths=[150, 300])
 
-    latest_table.setStyle(TableStyle([
+    diagnosis_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#dc3545")),
         ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
         ("BACKGROUND", (1, 0), (1, -1), colors.whitesmoke),
-        ("GRID", (0, 0), (-1, -1), 1, colors.grey),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
     ]))
-    elements.append(latest_table)
+    elements.append(diagnosis_table)
     elements.append(Spacer(1, 20))
 
-    # Full Patient Table
-    data = [["Name", "Age", "Gender", "Disease", "Confidence", "Date"]]
-    for r in records:
-        data.append([r["name"], r["age"], r["gender"], r["disease"],
-                     f"{r['confidence']}%", r["date"]])
+    # Verification QR Code
+    elements.append(Paragraph("<b><font size='14' color='#198754'>3. Report Verification</font></b>", styles["Heading2"]))
+    elements.append(Paragraph("Scan the QR code below using a smartphone to verify the authenticity of this report.", normal))
+    elements.append(Spacer(1, 8))
 
-    patient_table = Table(data, colWidths=[100, 40, 55, 120, 70, 80])
+    qr_image = Image(QR_PATH, width=1.4 * inch, height=1.4 * inch)
+    qr_image.hAlign = "CENTER"
+    elements.append(qr_image)
+    elements.append(Spacer(1, 15))
+
+    # Notices
+    elements.append(Paragraph("<font color='#dc3545'><b>CONFIDENTIAL MEDICAL RECORD</b></font>", styles["Heading2"]))
+    elements.append(Paragraph("This document contains private medical information belonging exclusively to the patient. Unauthorized access, sharing, or distribution is prohibited.", normal))
+    elements.append(Spacer(1, 10))
+
+    elements.append(Paragraph("<b>Disclaimer:</b> This report is generated using an AI preliminary assessment system and is not an official medical diagnosis. Please consult a qualified doctor.", normal))
+    elements.append(Spacer(1, 15))
+
+    elements.append(Paragraph("<b>AI Healthcare Diagnosis Assistant</b><br/>Developer: Aggriya Anand", styles["Italic"]))
+
+    doc.build(elements)
+    return report_id
+
+
+# ==========================
+# Admin Master PDF Builder (All Patients)
+# ==========================
+def build_admin_master_pdf():
+    """
+    Builds a single master report containing overall statistics
+    and all patient records for the admin.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM patients")
+    total_patients = cursor.fetchone()[0]
+
+    cursor.execute("SELECT ROUND(AVG(confidence), 2) FROM patients")
+    avg_conf = cursor.fetchone()[0] or 0
+
+    cursor.execute("""
+        SELECT disease, COUNT(*) FROM patients
+        GROUP BY disease ORDER BY COUNT(*) DESC LIMIT 1
+    """)
+    row = cursor.fetchone()
+    common_disease = row[0] if row else "N/A"
+
+    cursor.execute("""
+        SELECT report_id, name, age, gender, disease, confidence, date
+        FROM patients ORDER BY id DESC
+    """)
+    records = cursor.fetchall()
+    conn.close()
+
+    doc = SimpleDocTemplate(
+        ADMIN_REPORT_PATH,
+        pagesize=A4,
+        rightMargin=30, leftMargin=30,
+        topMargin=30, bottomMargin=30,
+    )
+
+    styles = getSampleStyleSheet()
+    title = styles["Title"]
+    title.alignment = TA_CENTER
+    heading = styles["Heading2"]
+    heading.alignment = TA_CENTER
+
+    elements = []
+
+    # Title
+    elements.append(Paragraph(
+        "<font color='#0d6efd'><b><font size='22'>AI Healthcare - Admin Master Patient Report</font></b></font>",
+        title,
+    ))
+    elements.append(Paragraph(
+        f"<font size='11' color='grey'>Generated On: {now_ist().strftime('%d-%m-%Y %I:%M %p')}</font>",
+        heading,
+    ))
+    elements.append(Spacer(1, 15))
+
+    # Summary Statistics Table
+    elements.append(Paragraph("<b><font size='14' color='#198754'>System Statistics</font></b>", heading))
+    elements.append(Spacer(1, 6))
+
+    summary_table = Table([
+        ["Total Registered Patients", total_patients],
+        ["Average Diagnosis Confidence", f"{avg_conf}%"],
+        ["Most Frequent Condition", common_disease],
+    ], colWidths=[220, 220])
+
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0d6efd")),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
+        ("BACKGROUND", (1, 0), (1, -1), colors.whitesmoke),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(summary_table)
+    elements.append(Spacer(1, 20))
+
+    # Full Patient List Table
+    elements.append(Paragraph("<b><font size='14' color='#0d6efd'>All Registered Patients</font></b>", heading))
+    elements.append(Spacer(1, 8))
+
+    data = [["Report ID", "Name", "Age/Gender", "Disease", "Conf.", "Date"]]
+    for r in records:
+        data.append([
+            r["report_id"] or "N/A",
+            r["name"],
+            f"{r['age']}/{r['gender']}",
+            r["disease"],
+            f"{r['confidence']}%",
+            r["date"]
+        ])
+
+    patient_table = Table(data, colWidths=[110, 100, 70, 120, 50, 70])
     patient_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#198754")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.beige]),
     ]))
     elements.append(patient_table)
-    elements.append(Spacer(1, 25))
-
-    # ==========================
-    # QR Code Verification
-    # ==========================
-    elements.append(
-        Paragraph(
-            "<font size='15' color='#0d6efd'><b>Report Verification</b></font>",
-            heading
-        )
-    )
-
-    elements.append(
-        Paragraph(
-            "Scan the QR code below to verify the authenticity of this medical report.",
-            normal
-        )
-    )
-
-    elements.append(Spacer(1, 10))
-
-    qr_image = Image(
-        QR_PATH,
-        width=1.5 * inch,
-        height=1.5 * inch
-    )
-
-    qr_image.hAlign = "CENTER"
-
-    elements.append(qr_image)
-
-    elements.append(Spacer(1, 20))
-
-    # ==========================
-    # Confidential Notice
-    # ==========================
-    elements.append(
-        Paragraph(
-            "<font color='#dc3545'><b>CONFIDENTIAL MEDICAL REPORT</b></font>",
-            styles["Heading2"]
-        )
-    )
-
-    elements.append(
-        Paragraph(
-            "This report contains confidential patient information. It is intended only for the patient and authorized healthcare professionals. Unauthorized sharing, copying, or distribution is prohibited.",
-            normal
-        )
-    )
-
-    elements.append(Spacer(1, 15))
-
-    # ==========================
-    # Disclaimer
-    # ==========================
-    elements.append(
-        Paragraph(
-            "<b>Disclaimer:</b> This report has been generated using an Artificial Intelligence based disease prediction system. The prediction is intended for educational and preliminary assessment purposes only and should not be considered a substitute for diagnosis or treatment by a qualified medical professional.",
-            normal
-        )
-    )
-
-    elements.append(Spacer(1, 20))
-
-    # Footer
-    elements.append(Spacer(1, 25))
-
-    elements.append(
-        Paragraph(
-            """
-            <b>AI Healthcare Diagnosis Assistant</b><br/>
-            Machine Learning Based Disease Prediction System<br/><br/>
-
-            Developed by Aggriya Anand<br/><br/>
-
-            <font color='grey'>
-            This report is automatically generated using Artificial Intelligence.
-            It should not replace professional medical advice.
-            </font>
-            """,
-            styles["Italic"]
-        )
-    )
 
     doc.build(elements)
 
-    return report_id
-
 
 # ==========================
-# Download Professional PDF Report
+# Download Individual Patient PDF Report
 # ==========================
 @app.route("/download_report")
 def download_report():
+    report_id = session.get("report_id")
+
     conn = get_db_connection()
     cursor = conn.cursor()
-
-    # Prefer the patient from the current session (the one who just got a
-    # prediction); fall back to the most recent record in the database.
-    report_id = session.get("report_id")
-    latest_patient = None
 
     if report_id:
         cursor.execute(
             "SELECT * FROM patients WHERE report_id = ? ORDER BY id DESC LIMIT 1",
             (report_id,),
         )
-        latest_patient = cursor.fetchone()
-
-    if latest_patient is None:
+        patient = cursor.fetchone()
+    else:
         cursor.execute("SELECT * FROM patients ORDER BY id DESC LIMIT 1")
-        latest_patient = cursor.fetchone()
+        patient = cursor.fetchone()
 
     conn.close()
 
-    if latest_patient is None:
-        return "No patient records found yet. Please complete a prediction first.", 404
+    if patient is None:
+        return "No patient record found. Please complete a prediction first.", 404
 
-    report_id = build_report_pdf(latest_patient)
+    report_id = build_individual_report_pdf(patient)
 
     return send_file(
         REPORT_PATH,
         as_attachment=True,
-        download_name=f"{report_id}.pdf"
+        download_name=f"Medical_Report_{report_id}.pdf"
     )
 
 
 # ==========================
-# Email PDF Report to Patient (admin only)
+# Download All Patient Reports (Admin Only)
+# ==========================
+@app.route("/admin/download_all_reports")
+@login_required
+def admin_download_all_reports():
+    build_admin_master_pdf()
+    
+    filename = f"Master_Patient_Report_{now_ist().strftime('%Y%m%d')}.pdf"
+    return send_file(
+        ADMIN_REPORT_PATH,
+        as_attachment=True,
+        download_name=filename
+    )
+
+
+# ==========================
+# Email PDF Report to Patient (Admin Only)
 # ==========================
 @app.route("/email_report/<int:patient_id>", methods=["POST"])
 @login_required
@@ -865,14 +772,12 @@ def email_report(patient_id):
 
     if not MAIL_USERNAME or not MAIL_PASSWORD:
         return (
-            "Email sending isn't configured yet. Set the MAIL_USERNAME and "
-            "MAIL_PASSWORD environment variables (a Gmail address and an "
-            "App Password) on the server, then try again.",
+            "Email sending isn't configured yet. Set MAIL_USERNAME and MAIL_PASSWORD.",
             500,
         )
 
     try:
-        report_id = build_report_pdf(patient)
+        report_id = build_individual_report_pdf(patient)
 
         msg = EmailMessage()
         msg["Subject"] = f"Your Medical Report - {report_id}"
@@ -884,9 +789,8 @@ def email_report(patient_id):
             f"AI Healthcare Diagnosis Assistant.\n\n"
             f"Report ID: {report_id}\n"
             f"Predicted Condition: {patient['disease']}\n\n"
-            f"This report was generated by an AI-based prediction system and "
-            f"is for preliminary assessment only. Please consult a qualified "
-            f"doctor for an official diagnosis.\n\n"
+            f"This report was generated by an AI prediction system for preliminary "
+            f"assessment only. Please consult a qualified doctor.\n\n"
             f"Regards,\nAI Healthcare Diagnosis Assistant"
         )
 
@@ -903,15 +807,11 @@ def email_report(patient_id):
             smtp.send_message(msg)
 
     except Exception as e:
-        # Surface the real error instead of a blank Internal Server Error
-        # page, so it's obvious what went wrong (bad PDF data, wrong SMTP
-        # credentials, network issue on Render, etc.)
         import traceback
         traceback.print_exc()
         return (
-            f"<h2>Could not send the email</h2>"
+            f"<h2>Could not send email</h2>"
             f"<p><b>Error:</b> {e}</p>"
-            f"<p>Check Render's Logs tab for the full technical details.</p>"
             f"<p><a href='/patient/{patient_id}'>&larr; Back to patient</a></p>",
             500,
         )
