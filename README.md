@@ -35,7 +35,7 @@ Experience the application instantly without any installation.
 Currently, the AI Healthcare Diagnosis Assistant is capable of predicting **41 diseases** based on symptom combinations entered by the user.
 
 📄 **Disease Reference Guide:**  
-**41_Diseases_Symptom_Reference_Guide.pdf**
+**https://drive.google.com/file/d/10738Su62tuRbFxcuagae6ePCqZznWLuj/view?usp=sharing**
 
 The reference guide includes:
 
