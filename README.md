@@ -88,8 +88,6 @@ The reference guide includes:
 40. Varicose Veins
 41. Hepatitis A
 
-> 📘 The complete symptom matrix for these diseases is available in the **41_Diseases_Symptom_Reference_Guide.pdf** included in this repository. :contentReference[oaicite:0]{index=0}
-
 ---
 
 # 🧠 How It Works
